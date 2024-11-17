@@ -3,132 +3,121 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
 
+// تحميل إعدادات البيئة
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
+
+// إعدادات SATIM وShopify
+const MERCHANT_USERNAME = process.env.MERCHANT_USERNAME;
+const MERCHANT_PASSWORD = process.env.MERCHANT_PASSWORD;
+const TERMINAL_ID = process.env.TERMINAL_ID;
+const CURRENT_URL = process.env.CURRENT_URL;
+const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const SHOPIFY_STORE_NAME = process.env.SHOPIFY_STORE_NAME;
 
 app.use(cors());
+app.use(express.json());
 
+// إنشاء رابط الدفع مع SATIM
 app.get('/payment', async (req, res) => {
-    const { price } = req.query;
-    const orderNumber = req.query.orderNumber || Math.floor(Math.random() * 100000).toString();
+    const { price, orderId } = req.query;
 
-    if (!price) {
-        return res.status(400).send('Error: price query parameter is required');
+    if (!price || isNaN(price)) {
+        return res.status(400).send('Invalid price');
     }
 
-    if (!isNumeric(price)) {
-        return res.status(400).send('Error: Price query parameter is not a valid number');
-    }
-
-    if (price < 50) {
-        return res.status(400).send('Error: the minimum price is 50');
-    }
+    const amount = price * 100; // تحويل السعر إلى أصغر وحدة
+    const paymentUrl = new URL("https://test.satim.dz/payment/rest/register.do");
+    paymentUrl.searchParams.append("userName", MERCHANT_USERNAME);
+    paymentUrl.searchParams.append("password", MERCHANT_PASSWORD);
+    paymentUrl.searchParams.append("orderNumber", orderId || Date.now().toString());
+    paymentUrl.searchParams.append("amount", amount);
+    paymentUrl.searchParams.append("returnUrl", `${CURRENT_URL}/success`);
+    paymentUrl.searchParams.append("failUrl", `${CURRENT_URL}/failure`);
 
     try {
-        const paymentUrl = getRegisterUrl(price, orderNumber).toString();
-        const response = await fetch(paymentUrl, { method: 'GET' });
+        const response = await fetch(paymentUrl.toString(), { method: 'GET' });
         const data = await response.json();
 
         if (data.errorCode) {
             return res.status(400).send(`SATIM Error: ${data.errorMessage}`);
         }
 
-        res.send(`<b>Payment Link:</b> <br> <a href="${data.formUrl}" target="_blank">${data.formUrl}</a>`);
+        res.send({ paymentLink: data.formUrl });
     } catch (error) {
-        console.error(error);
-        return res.status(500).send('Something went wrong!');
+        console.error('Error creating payment link:', error);
+        res.status(500).send('Internal server error');
     }
 });
 
+// نجاح الدفع
 app.get('/success', async (req, res) => {
     const { orderId } = req.query;
 
     if (!orderId) {
-        return res.status(400).send('Error: orderId query parameter is required');
+        return res.status(400).send('Order ID is required');
     }
+
+    const confirmUrl = new URL("https://test.satim.dz/payment/rest/getOrderStatus.do");
+    confirmUrl.searchParams.append("userName", MERCHANT_USERNAME);
+    confirmUrl.searchParams.append("password", MERCHANT_PASSWORD);
+    confirmUrl.searchParams.append("orderId", orderId);
 
     try {
-        const confirmUrl = getConfirmationUrl(orderId).toString();
-        const response = await fetch(confirmUrl, { method: 'GET' });
+        const response = await fetch(confirmUrl.toString(), { method: 'GET' });
         const data = await response.json();
 
-        res.send(`<b>Success Data:</b> <br> ${JSON.stringify(data)}`);
+        if (data.orderStatus === '2') {
+            await updateShopifyOrder(orderId);
+            res.send('Payment successful and order updated in Shopify!');
+        } else {
+            res.status(400).send('Payment verification failed!');
+        }
     } catch (error) {
-        console.error(error);
-        return res.status(500).send('Something went wrong!');
+        console.error('Error verifying payment:', error);
+        res.status(500).send('Internal server error');
     }
 });
 
-app.get('/failure', async (req, res) => {
-    const { orderId } = req.query;
+// فشل الدفع
+app.get('/failure', (req, res) => {
+    res.send('Payment failed!');
+});
 
-    if (!orderId) {
-        return res.status(400).send('Error: orderId query parameter is required');
-    }
+// تحديث حالة الطلب في Shopify
+async function updateShopifyOrder(orderId) {
+    const shopifyUrl = `https://${SHOPIFY_STORE_NAME}.myshopify.com/admin/api/2023-10/orders/${orderId}.json`;
 
     try {
-        const confirmUrl = getConfirmationUrl(orderId).toString();
-        const response = await fetch(confirmUrl, { method: 'GET' });
+        const response = await fetch(shopifyUrl, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+            },
+            body: JSON.stringify({
+                order: {
+                    id: orderId,
+                    financial_status: 'paid',
+                },
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to update Shopify order: ${response.statusText}`);
+        }
+
         const data = await response.json();
-
-        res.send(`<b>Payment Failed:</b> <br> ${JSON.stringify(data)}`);
+        console.log('Shopify order updated:', data);
     } catch (error) {
-        console.error(error);
-        return res.status(500).send('Something went wrong!');
+        console.error('Error updating Shopify order:', error);
+        throw error;
     }
+}
+
+// تشغيل الخادم
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
-
-app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
-});
-
-// Helper Functions
-function isNumeric(n) {
-    return !isNaN(parseFloat(n)) && isFinite(n);
-}
-
-function getRegisterUrl(price, orderNumber) {
-    const registerUrl = "https://test.satim.dz/payment/rest/register.do";
-    const merchant_username = process.env.MERCHANT_USERNAME;
-    const merchant_password = process.env.MERCHANT_PASSWORD;
-    const terminal_id = process.env.TERMINAL_ID;
-    const currency = "012";
-    const amount = price * 100; // SATIM يقبل العملات في الوحدة الأصغر
-    const language = "fr";
-    const returnUrl = `${process.env.CURRENT_URL}/success`;
-    const failUrl = `${process.env.CURRENT_URL}/failure`;
-    const jsonParams = JSON.stringify({
-        force_terminal_id: terminal_id,
-        udf1: orderNumber,
-    });
-
-    const url = new URL(registerUrl);
-    url.searchParams.append("userName", merchant_username);
-    url.searchParams.append("password", merchant_password);
-    url.searchParams.append("currency", currency);
-    url.searchParams.append("amount", amount);
-    url.searchParams.append("language", language);
-    url.searchParams.append("orderNumber", orderNumber);
-    url.searchParams.append("returnUrl", returnUrl);
-    url.searchParams.append("failUrl", failUrl);
-    url.searchParams.append("jsonParams", jsonParams);
-
-    return url;
-}
-
-function getConfirmationUrl(orderId) {
-    const confirmUrl = "https://test.satim.dz/payment/rest/confirmOrder.do";
-    const merchant_username = process.env.MERCHANT_USERNAME;
-    const merchant_password = process.env.MERCHANT_PASSWORD;
-    const language = "fr";
-
-    const url = new URL(confirmUrl);
-    url.searchParams.append("userName", merchant_username);
-    url.searchParams.append("password", merchant_password);
-    url.searchParams.append("orderId", orderId);
-    url.searchParams.append("language", language);
-
-    return url;
-}
