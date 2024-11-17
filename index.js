@@ -3,7 +3,6 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
 
-// تحميل إعدادات البيئة
 dotenv.config();
 
 const app = express();
@@ -16,9 +15,40 @@ const TERMINAL_ID = process.env.TERMINAL_ID;
 const CURRENT_URL = process.env.CURRENT_URL;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_STORE_NAME = process.env.SHOPIFY_STORE_NAME;
+const SHOPIFY_SECRET = process.env.SHOPIFY_SECRET;
 
 app.use(cors());
 app.use(express.json());
+
+// معالجة Webhook الخاص بـ Shopify
+app.post('/shopify-webhook', express.json(), async (req, res) => {
+    const hmacHeader = req.get('X-Shopify-Hmac-Sha256');
+    const shopifyTopic = req.get('X-Shopify-Topic');
+    const shopifyDomain = req.get('X-Shopify-Shop-Domain');
+
+    // التحقق من التوقيع
+    const body = JSON.stringify(req.body);
+    const crypto = await import('crypto');
+    const generatedHmac = crypto.createHmac('sha256', SHOPIFY_SECRET).update(body, 'utf8').digest('base64');
+
+    if (generatedHmac !== hmacHeader) {
+        console.error('Webhook verification failed!');
+        return res.status(401).send('Unauthorized');
+    }
+
+    console.log(`Received Webhook from ${shopifyDomain}`);
+    console.log(`Event: ${shopifyTopic}`);
+    console.log('Payload:', req.body);
+
+    // معالجة البيانات
+    if (shopifyTopic === 'orders/create') {
+        const orderData = req.body;
+        console.log('Order Created:', orderData);
+        // تنفيذ أي معالجة إضافية للطلب...
+    }
+
+    res.status(200).send('Webhook received');
+});
 
 // إنشاء رابط الدفع مع SATIM
 app.get('/payment', async (req, res) => {
