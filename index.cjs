@@ -1,7 +1,8 @@
-const express = require('express');
-const fetch = require('node-fetch');
-const cors = require('cors');
-const bodyParser = require('body-parser');
+import express from 'express';  // Using import instead of require
+import fetch from 'node-fetch';  // If you're using node-fetch, import it this way
+import cors from 'cors';  // Same for cors
+import bodyParser from 'body-parser';  // Same for body-parser
+
 const app = express();
 
 // Set up environment variables for SATIM
